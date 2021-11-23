@@ -1,17 +1,18 @@
 import numpy as np
 import pandas as pd
 from scipy.stats import norm #, multivariate_normal
+import statsmodels.api as sm
 from datetime import datetime as dt
 from dateutil.relativedelta import relativedelta
 from dataclasses import dataclass
 
 np.random.seed(1) # For reproducibility
 
-def generate_data():
+def generate_data(ar1_corr=None):
     days, x_df = get_predictors()
     beta, alpha = get_coefs()
     mu, sigma = get_derived_params(x_df, beta, alpha)
-    z, y = sample_data(mu, sigma)
+    z, y = sample_data(mu, sigma, ar1_corr)
 
     # Return data in dataclass
     @dataclass(frozen=True)
@@ -109,7 +110,7 @@ def get_coefs():
             beta_seasonality)
 
     # Set alpha
-    alpha_intercept = [-2.]
+    alpha_intercept = [-1.]
     alpha_day_of_week = [-0.3, 0.03, 0.06, 0.1, 0.09, -0.04, -0.23]
     alpha_trends = [-0.2, -0.03]
     alpha_seasonality = [0.16, -0.05]
@@ -130,7 +131,14 @@ def get_derived_params(x_df, beta, alpha):
     return mu, sigma
 
 
-def sample_data(mu, sigma):
-    z = norm.rvs(loc=mu, scale=sigma)
+def sample_data(mu, sigma, ar1_corr):
+    z = None
+    if ar1_corr is None:
+        z = norm.rvs(loc=mu, scale=sigma)
+    else:
+        arma_process = sm.tsa.ArmaProcess(np.array([1., -ar1_corr]))
+        epsilon_raw = arma_process.generate_sample(mu.size)
+        epsilon = epsilon_raw  * np.sqrt((1 - ar1_corr**2))
+        z = mu + (sigma * epsilon)
     y = np.floor(np.exp(z))
     return z, y
