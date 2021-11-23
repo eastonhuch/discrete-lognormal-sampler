@@ -68,14 +68,17 @@ def get_predictors():
         year_radians=df.day_of_year*2*np.pi/365,
     )
 
-    # Day of week
-    day_of_week = pd.get_dummies(df.day_of_week, prefix="day_of_week")
-
     # Long-term trends
+    days_since_start_squared_raw = df.days_since_start**2
     trends = (df
-        .assign(days_since_start_squared=df.days_since_start**2)
+        .assign(days_since_start_squared=(
+            days_since_start_squared_raw - days_since_start_squared_raw.mean()
+            ) / days_since_start_squared_raw.std())
         .loc[:, ["days_since_start", "days_since_start_squared"]]
     )
+
+    # Day of week
+    day_of_week = pd.get_dummies(df.day_of_week, prefix="day_of_week")
 
     # Seasonality
     seasonality = df.assign(
@@ -87,8 +90,8 @@ def get_predictors():
     # Create design matrix
     df_list = [
         df.loc[:, ["intercept"]],
-        day_of_week,
         trends,
+        day_of_week,
         seasonality,
     ]
 
@@ -100,24 +103,24 @@ def get_predictors():
 def get_coefs():
     # Set beta
     beta_intercept = [5.]
-    beta_day_of_week = [-0.3, 0.03, 0.06, 0.1, 0.09, -0.04, -0.23]
     beta_trends = [0.4, -0.17]
+    beta_day_of_week = [-0.3, 0.03, 0.06, 0.1, 0.09, -0.04, -0.23]
     beta_seasonality = [0.2, -0.1]
     beta = np.array(
         beta_intercept +
-            beta_day_of_week +
             beta_trends +
+            beta_day_of_week +
             beta_seasonality)
 
     # Set alpha
     alpha_intercept = [-2.]
-    alpha_day_of_week = [-0.3, 0.03, 0.06, 0.1, 0.09, -0.04, -0.23]
     alpha_trends = [-0.2, -0.03]
+    alpha_day_of_week = [-0.3, 0.03, 0.06, 0.1, 0.09, -0.04, -0.23]
     alpha_seasonality = [0.16, -0.05]
     alpha = np.array(
         alpha_intercept +
-            alpha_day_of_week +
             alpha_trends +
+            alpha_day_of_week +
             alpha_seasonality)
 
     return beta, alpha
