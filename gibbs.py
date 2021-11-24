@@ -43,7 +43,6 @@ class GibbsSampler():
 
         # Model-fitting loop
         for i in range(1, n_iter):
-            print(i)
             self.sample_z()
             self.sample_beta()
             self.sample_alpha()
@@ -57,7 +56,7 @@ class GibbsSampler():
 
         # Hyperparameters
         self.mu_beta = np.zeros(p)
-        sigma_beta_precisions = [1e-8]*2 + [100]*(p-2)
+        sigma_beta_precisions = [1e-4]*2 + [1e2]*(p-2)
         self.sigma_beta_inv = np.diag(sigma_beta_precisions)
         self.beta_prior_weight = self.sigma_beta_inv @ self.mu_beta
         self.mu_alpha = self.mu_beta.copy()
@@ -128,31 +127,33 @@ class GibbsSampler():
         self.beta.set_next_value(beta_sample)
         self.mu.set_next_value(x @ beta_sample)
 
-    def sample_alpha(self):
+    def sample_alpha(self, n_steps=10):
         # Current values
         alpha_current = self.alpha.get_last_value()
         sigma_current = self.sigma.get_last_value()
-        cov_current = self.calculate_Sigma(np.diag(sigma_current))
-
-        # Proposals
-        alpha_proposal = multivariate_normal.rvs(alpha_current, self.proposal_cov_alpha)
-        sigma_proposal = np.exp(self.x @ alpha_proposal)
-        cov_proposal = self.calculate_Sigma(np.diag(sigma_proposal))
 
         # Other quantities we'll need
         z = self.z.get_last_value()
         mu = self.mu.get_last_value()
 
-        # Metropolis step
-        log_mr = self.alpha_prior.logpdf(alpha_proposal) - self.alpha_prior.logpdf(alpha_current)
-        log_mr += multivariate_normal.logpdf(z, mean=mu, cov=cov_proposal)
-        log_mr -= multivariate_normal.logpdf(z, mean=mu, cov=cov_current)
-        if np.log(np.random.random()) < log_mr:
-            self.alpha.set_next_value(alpha_proposal)
-            self.sigma.set_next_value(sigma_proposal)
-        else:
-            self.alpha.set_next_value(alpha_current)
-            self.sigma.set_next_value(sigma_current)
+        for step in range(n_steps):
+            cov_current = self.calculate_Sigma(np.diag(sigma_current))
+
+            # Proposals
+            alpha_proposal = multivariate_normal.rvs(alpha_current, self.proposal_cov_alpha)
+            sigma_proposal = np.exp(self.x @ alpha_proposal)
+            cov_proposal = self.calculate_Sigma(np.diag(sigma_proposal))
+
+            # Metropolis step
+            log_mr = self.alpha_prior.logpdf(alpha_proposal) - self.alpha_prior.logpdf(alpha_current)
+            log_mr += multivariate_normal.logpdf(z, mean=mu, cov=cov_proposal)
+            log_mr -= multivariate_normal.logpdf(z, mean=mu, cov=cov_current)
+            if np.log(np.random.random()) < log_mr:
+                alpha_current = alpha_proposal.copy()
+                sigma_current = sigma_proposal.copy()
+
+        self.alpha.set_next_value(alpha_current)
+        self.sigma.set_next_value(sigma_current)
 
     def sample_rho(self):
         pass
