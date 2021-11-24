@@ -19,6 +19,7 @@ def generate_data(ar1_corr=None):
     class Data:
         days: pd.Series
         x_df: pd.DataFrame
+        x: np.ndarray
         beta: np.ndarray
         alpha: np.ndarray
         mu: np.ndarray
@@ -29,6 +30,7 @@ def generate_data(ar1_corr=None):
     data = Data(
         days=days,
         x_df=x_df,
+        x=x_df.values,
         beta=beta,
         alpha=alpha,
         mu=mu,
