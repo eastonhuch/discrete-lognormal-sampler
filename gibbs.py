@@ -42,11 +42,11 @@ class GibbsSampler():
         self.create_parameters()
 
         # Model-fitting loop
-        for i in range(1, n_iter+1):
+        for i in range(1, n_iter):
+            print(i)
             self.sample_z()
             self.sample_beta()
-            break
-            # self.sample_alpha()
+            self.sample_alpha()
             # if self.use_correlated_model:
             #     self.sample_rho()
 
@@ -57,10 +57,26 @@ class GibbsSampler():
 
         # Hyperparameters
         self.mu_beta = np.zeros(p)
-        self.sigma_beta_inv = np.diag([0]*2 + [1]*(p-2))
+        sigma_beta_precisions = [1e-8]*2 + [100]*(p-2)
+        self.sigma_beta_inv = np.diag(sigma_beta_precisions)
         self.beta_prior_weight = self.sigma_beta_inv @ self.mu_beta
         self.mu_alpha = self.mu_beta.copy()
-        self.sigma_alpha_inv = self.sigma_beta_inv.copy()
+        sigma_alpha_precisions = sigma_beta_precisions
+        self.sigma_alpha_inv = np.diag(sigma_alpha_precisions) 
+        self.sigma_alpha = np.diag(1/np.array(sigma_alpha_precisions))
+        rho_proposal = 0.8
+        if self.use_correlated_model:
+            R = self.calculate_R(rho_proposal)
+            R_inv = self.calculate_R_inv(rho_proposal)
+            meat = R * R_inv
+            meat[range(n), range(n)] += 1
+            proposal_precision_alpha = self.x.T @ (meat @ self.x)
+        else:
+            proposal_precision_alpha = 2 * self.x.T @ self.x
+        proposal_precision_alpha
+        proposal_precision_alpha += self.sigma_alpha_inv
+        self.proposal_cov_alpha = np.linalg.inv(proposal_precision_alpha)
+        self.alpha_prior = multivariate_normal(self.mu_alpha, self.sigma_alpha)
 
         # Estimated parameters
         self.beta = Parameter(np.zeros([n_iter, p]))
@@ -83,13 +99,17 @@ class GibbsSampler():
             Sigma_inv_i_ni = np.delete(Sigma_inv[i], i)
             Sigma_ni_ni_inv = Sigma_inv_ni_ni - Sigma_inv_i_ni @ (Sigma_inv_ni_ni @ Sigma_inv_i_ni)
             Sigma_prod = Sigma_i_ni @ Sigma_ni_ni_inv
+            mu_i = mu[i]            
 
-            z_i_mean = mu[i] + Sigma_prod @ np.delete(e, i)
+            z_i_mean = mu_i + Sigma_prod @ np.delete(e, i)
             z_i_var = Sigma[i, i] - Sigma_prod @ Sigma_i_ni
+            z_i_std = np.sqrt(z_i_var)
             y_i = self.y[i]
-            z[i] = truncnorm.rvs(
-                np.log(y_i), np.log(y_i+1),
-                loc=z_i_mean, scale=np.sqrt(z_i_var))
+            a = (np.log(y_i) - z_i_mean) / z_i_std
+            b = (np.log(y_i+1) - z_i_mean) / z_i_std
+            z_i = truncnorm.rvs(a, b, loc=z_i_mean, scale=z_i_std)
+            z[i] = z_i
+            e[i] = z_i - mu_i
 
         self.z.set_next_value(z)
 
@@ -106,27 +126,51 @@ class GibbsSampler():
         mu_posterior = sigma_posterior @ (self.beta_prior_weight + xT_Sigma_inv @ z)
         beta_sample = multivariate_normal.rvs(mean=mu_posterior, cov=sigma_posterior)
         self.beta.set_next_value(beta_sample)
+        self.mu.set_next_value(x @ beta_sample)
 
     def sample_alpha(self):
-        pass
+        # Current values
+        alpha_current = self.alpha.get_last_value()
+        sigma_current = self.sigma.get_last_value()
+        cov_current = self.calculate_Sigma(np.diag(sigma_current))
+
+        # Proposals
+        alpha_proposal = multivariate_normal.rvs(alpha_current, self.proposal_cov_alpha)
+        sigma_proposal = np.exp(self.x @ alpha_proposal)
+        cov_proposal = self.calculate_Sigma(np.diag(sigma_proposal))
+
+        # Other quantities we'll need
+        z = self.z.get_last_value()
+        mu = self.mu.get_last_value()
+
+        # Metropolis step
+        log_mr = self.alpha_prior.logpdf(alpha_proposal) - self.alpha_prior.logpdf(alpha_current)
+        log_mr += multivariate_normal.logpdf(z, mean=mu, cov=cov_proposal)
+        log_mr -= multivariate_normal.logpdf(z, mean=mu, cov=cov_current)
+        if np.log(np.random.random()) < log_mr:
+            self.alpha.set_next_value(alpha_proposal)
+            self.sigma.set_next_value(sigma_proposal)
+        else:
+            self.alpha.set_next_value(alpha_current)
+            self.sigma.set_next_value(sigma_current)
 
     def sample_rho(self):
         pass
 
     # Helper functions for calculating cov/corr matrices and their inverses
-    def calculate_Sigma(self):
+    def calculate_Sigma(self, sigma_2d=None):
         R = self.calculate_R()
-        sigma_2d = self.get_sigma_2d()
+        sigma_2d = self.get_sigma_2d() if sigma_2d is None else sigma_2d
         return sigma_2d @ R @ sigma_2d
 
-    def calculate_Sigma_inv(self):
+    def calculate_Sigma_inv(self, sigma_2d_inv=None):
         R_inv = self.calculate_R_inv()
-        sigma_inv_2d = self.get_sigma_inv_2d()
+        sigma_inv_2d = self.get_sigma_inv_2d() if sigma_2d_inv is None else sigma_2d_inv
         return sigma_inv_2d @ R_inv @ sigma_inv_2d
 
-    def calculate_R(self):
+    def calculate_R(self, rho=None):
         # Pull out paramter values of interest
-        rho = self.rho.get_last_value()
+        rho = self.rho.get_last_value() if rho is None else rho
         n = self.n
 
         # Create R
@@ -138,9 +182,9 @@ class GibbsSampler():
         R.resize([n, n]) # Surprisingly, this modifies in place
         return R
 
-    def calculate_R_inv(self):
+    def calculate_R_inv(self, rho=None):
         # Pull out parameter values we need
-        rho = self.rho.get_last_value()
+        rho = self.rho.get_last_value() if rho is None else rho
         n = self.n
 
         # Calculate R_inv
