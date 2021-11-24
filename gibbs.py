@@ -9,7 +9,7 @@ class Parameter():
         self.last_idx = 0
 
     def get_last_value(self):
-        return self.values[self.last_idx]
+        return self.values[self.last_idx].copy()
 
     def set_next_value(self, next_value):
         self.values[self.last_idx+1] = next_value.copy()
@@ -31,21 +31,21 @@ class GibbsSampler():
     def fit(self, data, n_iter=100):
 
         # Prepare data/parameters
-        x = data.x
-        y = data.y
-        n, p = x.shape
+        self.x = data.x
+        self.y = data.y
+        n, p = self.x.shape
         self.n = n
         self.p = p
-        if n != y.size:
-            raise ValueError("y.size must equal the number of rows in x")
+        if n != self.y.size:
+            raise ValueError("data.y.size must equal the number of rows in data.x")
         self.n_iter = n_iter
         self.create_parameters()
 
         # Model-fitting loop
         for i in range(1, n_iter+1):
             self.sample_z()
+            self.sample_beta()
             break
-            # self.sample_beta()
             # self.sample_alpha()
             # if self.use_correlated_model:
             #     self.sample_rho()
@@ -57,22 +57,18 @@ class GibbsSampler():
 
         # Hyperparameters
         self.mu_beta = np.zeros(p)
-        self.sigma_beta = np.diag([0]*2 + [1]*(p-2))
-        self.sigma_beta[0, 0] = 0
-        self.sigma_beta[1, 1] = 0
-
+        self.sigma_beta_inv = np.diag([0]*2 + [1]*(p-2))
+        self.beta_prior_weight = self.sigma_beta_inv @ self.mu_beta
         self.mu_alpha = self.mu_beta.copy()
-        self.sigma_alpha = self.sigma_beta.copy()
+        self.sigma_alpha_inv = self.sigma_beta_inv.copy()
 
         # Estimated parameters
         self.beta = Parameter(np.zeros([n_iter, p]))
         self.mu = Parameter(np.zeros([n_iter, n]))
         self.alpha = Parameter(np.zeros([n_iter, p]))
-        self.sigma = Parameter(np.zeros([n_iter, n]))
+        self.sigma = Parameter(np.ones([n_iter, n]))
         self.z = Parameter(np.zeros([n_iter, n]))
-        if self.use_correlated_model:
-            rho_prior_mean = self.alpha_rho / self.beta_rho
-            self.rho = Parameter(np.full(n_iter, rho_prior_mean))
+        self.rho = Parameter(np.zeros(n_iter))
 
     def sample_z(self):
         mu = self.mu.get_last_value()
@@ -91,12 +87,25 @@ class GibbsSampler():
             z_i_mean = mu[i] + Sigma_prod @ np.delete(e, i)
             z_i_var = Sigma[i, i] - Sigma_prod @ Sigma_i_ni
             y_i = self.y[i]
-            z[i] = truncnorm.rvs(y_i, y_i+1, loc=z_i_mean, scale=np.sqrt(z_i_var))
+            z[i] = truncnorm.rvs(
+                np.log(y_i), np.log(y_i+1),
+                loc=z_i_mean, scale=np.sqrt(z_i_var))
 
         self.z.set_next_value(z)
 
     def sample_beta(self):
-        pass
+        # Pull out the values I need for convenience
+        x = self.x
+        z = self.z.get_last_value()
+        Sigma_inv = self.calculate_Sigma_inv()
+
+        # Calculate posterior parameters and sample
+        xT_Sigma_inv = x.T @ Sigma_inv
+        sigma_posterior_inv = self.sigma_beta_inv + xT_Sigma_inv @ x
+        sigma_posterior = np.linalg.inv(sigma_posterior_inv)
+        mu_posterior = sigma_posterior @ (self.beta_prior_weight + xT_Sigma_inv @ z)
+        beta_sample = multivariate_normal.rvs(mean=mu_posterior, cov=sigma_posterior)
+        self.beta.set_next_value(beta_sample)
 
     def sample_alpha(self):
         pass
@@ -123,7 +132,7 @@ class GibbsSampler():
         # Create R
         ns = np.arange(n)
         ns_repeated = np.repeat(ns, n)
-        ns_tiled = np.tile(ns. n)
+        ns_tiled = np.tile(ns, n)
         abs_diff = np.abs(ns_repeated - ns_tiled)
         R = rho**abs_diff
         R.resize([n, n]) # Surprisingly, this modifies in place
