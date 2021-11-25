@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from scipy.stats import norm, truncnorm, multivariate_normal
+from scipy.stats import norm, truncnorm, multivariate_normal, beta
 
 
 class Parameter():
@@ -46,8 +46,8 @@ class GibbsSampler():
             self.sample_z()
             self.sample_beta()
             self.sample_alpha()
-            # if self.use_correlated_model:
-            #     self.sample_rho()
+            if self.use_correlated_model:
+                self.sample_rho()
 
     def create_parameters(self):
         n = self.n
@@ -56,7 +56,7 @@ class GibbsSampler():
 
         # Hyperparameters
         self.mu_beta = np.zeros(p)
-        sigma_beta_precisions = [1e-4]*2 + [1e2]*(p-2)
+        sigma_beta_precisions = [1e-4]*2 + [1.]*(p-2)
         self.sigma_beta_inv = np.diag(sigma_beta_precisions)
         self.beta_prior_weight = self.sigma_beta_inv @ self.mu_beta
         self.mu_alpha = self.mu_beta.copy()
@@ -84,6 +84,8 @@ class GibbsSampler():
         self.sigma = Parameter(np.ones([n_iter, n]))
         self.z = Parameter(np.zeros([n_iter, n]))
         self.rho = Parameter(np.zeros(n_iter))
+        if self.use_correlated_model:
+            self.rho_prior = beta(self.alpha_rho, self.beta_rho)
 
     def sample_z(self):
         mu = self.mu.get_last_value()
@@ -155,17 +157,37 @@ class GibbsSampler():
         self.alpha.set_next_value(alpha_current)
         self.sigma.set_next_value(sigma_current)
 
-    def sample_rho(self):
-        pass
+    def sample_rho(self, n_steps=1):
+        # Current values
+        rho_current = self.rho.get_last_value()
+
+        # Other quantities we'll need
+        z = self.z.get_last_value()
+        mu = self.mu.get_last_value()
+
+        for step in range(n_steps):
+            cov_current = self.calculate_Sigma(rho=rho_current)
+            rho_proposal = norm.rvs(loc=rho_current, scale=0.05)
+
+            if np.abs(rho_proposal) <= 1:
+                cov_proposal = self.calculate_Sigma(rho=rho_proposal)
+                log_mr = self.rho_prior.logpdf(rho_proposal) - self.rho_prior.logpdf(rho_current)
+                log_mr += multivariate_normal.logpdf(z, mean=mu, cov=cov_proposal)
+                log_mr -= multivariate_normal.logpdf(z, mean=mu, cov=cov_current)
+                if np.log(np.random.random()) < log_mr:
+                    rho_current = rho_proposal
+
+        self.rho.set_next_value(rho_current)
+        
 
     # Helper functions for calculating cov/corr matrices and their inverses
-    def calculate_Sigma(self, sigma_2d=None):
-        R = self.calculate_R()
+    def calculate_Sigma(self, sigma_2d=None, rho=None):
+        R = self.calculate_R(rho=rho)
         sigma_2d = self.get_sigma_2d() if sigma_2d is None else sigma_2d
         return sigma_2d @ R @ sigma_2d
 
-    def calculate_Sigma_inv(self, sigma_2d_inv=None):
-        R_inv = self.calculate_R_inv()
+    def calculate_Sigma_inv(self, sigma_2d_inv=None, rho=None):
+        R_inv = self.calculate_R_inv(rho=rho)
         sigma_inv_2d = self.get_sigma_inv_2d() if sigma_2d_inv is None else sigma_2d_inv
         return sigma_inv_2d @ R_inv @ sigma_inv_2d
 
